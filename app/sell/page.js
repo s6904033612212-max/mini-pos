@@ -4,97 +4,176 @@ import { supabase } from '@/lib/supabaseClient';
 
 export default function SellPage() {
   const [products, setProducts] = useState([]);
-  const [selectedProduct, setSelectedProduct] = useState('');
-  const [quantity, setQuantity] = useState(1);
+  const [cart, setCart] = useState([]); // [{ id, name, price, unit, stock, quantity }]
   const [message, setMessage] = useState('');
+  const [selling, setSelling] = useState(false);
 
   useEffect(() => {
     fetchProducts();
   }, []);
 
   async function fetchProducts() {
-    const { data } = await supabase.from('products').select('*').gt('stock', 0);
+    const { data } = await supabase.from('products').select('*').order('sku', { ascending: true });
     if (data) setProducts(data);
   }
 
-  const currentProduct = products.find(p => p.id === selectedProduct);
-  const totalPrice = currentProduct ? currentProduct.price * quantity : 0;
+  // จำนวนที่อยู่ในตะกร้าแล้วของสินค้าแต่ละตัว (ใช้กันไม่ให้หยิบเกินสต๊อก)
+  function inCart(id) {
+    const item = cart.find(i => i.id === id);
+    return item ? item.quantity : 0;
+  }
 
-  async function handleSell(e) {
-    e.preventDefault();
-    if (!currentProduct) return;
+  function addToCart(product) {
+    setMessage('');
+    if (inCart(product.id) >= product.stock) return;
+    setCart(prev => {
+      const existing = prev.find(i => i.id === product.id);
+      if (existing) {
+        return prev.map(i => (i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+      }
+      return [...prev, { ...product, quantity: 1 }];
+    });
+  }
 
-    if (quantity > currentProduct.stock) {
-      alert('จำนวนสินค้าคงเหลือไม่พอ');
+  function changeQuantity(id, quantity) {
+    setCart(prev =>
+      prev
+        .map(i => (i.id === id ? { ...i, quantity: Math.min(Math.max(quantity, 0), i.stock) } : i))
+        .filter(i => i.quantity > 0)
+    );
+  }
+
+  const totalItems = cart.reduce((sum, i) => sum + i.quantity, 0);
+  const totalPrice = cart.reduce((sum, i) => sum + Number(i.price) * i.quantity, 0);
+
+  async function handleCheckout() {
+    if (cart.length === 0 || selling) return;
+    setSelling(true);
+    setMessage('');
+
+    // 1. ดึงสต๊อกล่าสุดจากฐานข้อมูล เผื่อมีคนอื่นขายไปก่อนหน้า
+    const { data: latest, error: fetchError } = await supabase
+      .from('products')
+      .select('id, name, stock')
+      .in('id', cart.map(i => i.id));
+
+    if (fetchError || !latest) {
+      alert('ไม่สามารถตรวจสอบสต๊อกได้ กรุณาลองใหม่');
+      setSelling(false);
       return;
     }
 
-    // 1. บันทึกประวัติการขาย
-    const { error: saleError } = await supabase.from('sales').insert([{
-      product_id: currentProduct.id,
-      product_name: currentProduct.name,
-      quantity: Number(quantity),
-      total_price: totalPrice
-    }]);
+    const shortage = cart.find(i => {
+      const p = latest.find(l => l.id === i.id);
+      return !p || p.stock < i.quantity;
+    });
+    if (shortage) {
+      alert(`สินค้า "${shortage.name}" คงเหลือไม่พอ`);
+      await fetchProducts();
+      setSelling(false);
+      return;
+    }
+
+    // 2. บันทึกรายการขาย (1 แถวต่อสินค้า 1 ชนิด)
+    const { error: saleError } = await supabase.from('sales').insert(
+      cart.map(i => ({
+        product_id: i.id,
+        product_name: i.name,
+        quantity: i.quantity,
+        total_price: Number(i.price) * i.quantity,
+      }))
+    );
 
     if (saleError) {
-      alert('เกิดข้อผิดพลาดในการขาย');
+      alert('เกิดข้อผิดพลาดในการบันทึกการขาย');
+      setSelling(false);
       return;
     }
 
-    // 2. ตัดสต๊อกสินค้า
-    await supabase.from('products').update({
-      stock: currentProduct.stock - Number(quantity)
-    }).eq('id', currentProduct.id);
+    // 3. ตัดสต๊อกสินค้าทีละรายการ
+    for (const i of cart) {
+      const p = latest.find(l => l.id === i.id);
+      await supabase.from('products').update({ stock: p.stock - i.quantity }).eq('id', i.id);
+    }
 
-    setMessage('ขายสินค้าสำเร็จ!');
-    setSelectedProduct('');
-    setQuantity(1);
-    fetchProducts();
+    setMessage(`ขายสำเร็จ ${totalItems} ชิ้น รวม ฿${totalPrice.toLocaleString()}`);
+    setCart([]);
+    await fetchProducts();
+    setSelling(false);
   }
 
   return (
     <div>
-      <h2>ขายสินค้า</h2>
+      {/* สรุปยอดรวม ตัวใหญ่ อยู่บนสุด ให้ทั้งคนขายและลูกค้าเห็นชัด */}
+      <div className="total-banner">
+        <div className="total-label">ยอดรวมทั้งหมด ({totalItems} ชิ้น)</div>
+        <div className="total-amount">฿{totalPrice.toLocaleString()}</div>
+        <button
+          className="checkout-button"
+          onClick={handleCheckout}
+          disabled={cart.length === 0 || selling}
+        >
+          {selling ? 'กำลังบันทึก...' : 'ยืนยันการขาย'}
+        </button>
+      </div>
+
+      {message && <p className="success-message">{message}</p>}
+
+      {/* ตะกร้าสินค้า */}
       <div className="card">
-        {message && <p style={{ color: 'green', marginBottom: '1rem' }}>{message}</p>}
-        <form onSubmit={handleSell} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div>
-            <label>เลือกสินค้า: </label>
-            <select 
-              value={selectedProduct} 
-              onChange={e => { setSelectedProduct(e.target.value); setMessage(''); }}
-              style={{ width: '100%' }}
-              required
-            >
-              <option value="">-- เลือกรายการสินค้า --</option>
-              {products.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.name} (฿{p.price}) - เหลือ {p.stock} {p.unit}
-                </option>
+        <h3>ตะกร้าสินค้า</h3>
+        {cart.length === 0 ? (
+          <p style={{ color: '#888', marginTop: '0.5rem' }}>ยังไม่มีสินค้าในตะกร้า — กดเลือกสินค้าด้านล่าง</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>สินค้า</th>
+                <th>ราคา</th>
+                <th>จำนวน</th>
+                <th>รวม</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cart.map(i => (
+                <tr key={i.id}>
+                  <td>{i.name}</td>
+                  <td>฿{Number(i.price).toLocaleString()}</td>
+                  <td>
+                    <div className="qty-control">
+                      <button onClick={() => changeQuantity(i.id, i.quantity - 1)}>−</button>
+                      <span>{i.quantity}</span>
+                      <button onClick={() => changeQuantity(i.id, i.quantity + 1)} disabled={i.quantity >= i.stock}>+</button>
+                    </div>
+                  </td>
+                  <td>฿{(Number(i.price) * i.quantity).toLocaleString()}</td>
+                </tr>
               ))}
-            </select>
-          </div>
+            </tbody>
+          </table>
+        )}
+      </div>
 
-          <div>
-            <label>จำนวน: </label>
-            <input 
-              type="number" 
-              min="1" 
-              max={currentProduct ? currentProduct.stock : 1}
-              value={quantity} 
-              onChange={e => setQuantity(e.target.value)}
-              style={{ width: '100%' }}
-              required 
-            />
-          </div>
-
-          <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>
-            ยอดรวม: ฿{totalPrice.toLocaleString()}
-          </div>
-
-          <button type="submit" style={{ padding: '10px', fontSize: '1rem' }}>ยืนยันการขาย</button>
-        </form>
+      {/* รายการสินค้าให้กดเพิ่มลงตะกร้า */}
+      <h3>เลือกสินค้า</h3>
+      <div className="product-grid">
+        {products.map(p => {
+          const remaining = p.stock - inCart(p.id);
+          return (
+            <button
+              key={p.id}
+              className="product-tile"
+              onClick={() => addToCart(p)}
+              disabled={remaining <= 0}
+            >
+              <span className="product-name">{p.name}</span>
+              <span className="product-price">฿{Number(p.price).toLocaleString()}</span>
+              <span className="product-stock">
+                {remaining > 0 ? `เหลือ ${remaining} ${p.unit}` : 'หมด'}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
