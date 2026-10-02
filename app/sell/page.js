@@ -43,6 +43,24 @@ export default function SellPage() {
     );
   }
 
+  // ส่งไปให้ API Route ฝั่ง Server เป็นคนยิง Telegram (Bot Token อยู่ฝั่ง Server เท่านั้น)
+  async function notifyTelegram(saleIds) {
+    if (saleIds.length === 0) return;
+    try {
+      const res = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ saleIds }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.warn('แจ้งเตือน Telegram ไม่สำเร็จ:', data.error || res.status);
+      }
+    } catch (err) {
+      console.warn('แจ้งเตือน Telegram ไม่สำเร็จ:', err.message);
+    }
+  }
+
   const totalItems = cart.reduce((sum, i) => sum + i.quantity, 0);
   const totalPrice = cart.reduce((sum, i) => sum + Number(i.price) * i.quantity, 0);
 
@@ -74,15 +92,18 @@ export default function SellPage() {
       return;
     }
 
-    // 2. บันทึกรายการขาย (1 แถวต่อสินค้า 1 ชนิด)
-    const { error: saleError } = await supabase.from('sales').insert(
-      cart.map(i => ({
-        product_id: i.id,
-        product_name: i.name,
-        quantity: i.quantity,
-        total_price: Number(i.price) * i.quantity,
-      }))
-    );
+    // 2. บันทึกรายการขาย (1 แถวต่อสินค้า 1 ชนิด) และขอ id กลับมาไว้ส่งแจ้งเตือน
+    const { data: newSales, error: saleError } = await supabase
+      .from('sales')
+      .insert(
+        cart.map(i => ({
+          product_id: i.id,
+          product_name: i.name,
+          quantity: i.quantity,
+          total_price: Number(i.price) * i.quantity,
+        }))
+      )
+      .select('id');
 
     if (saleError) {
       alert('เกิดข้อผิดพลาดในการบันทึกการขาย');
@@ -95,6 +116,9 @@ export default function SellPage() {
       const p = latest.find(l => l.id === i.id);
       await supabase.from('products').update({ stock: p.stock - i.quantity }).eq('id', i.id);
     }
+
+    // 4. แจ้งเตือนเข้า Telegram (ยิงแล้วไม่รอผล — ถ้า Telegram มีปัญหา การขายยังสำเร็จตามปกติ)
+    notifyTelegram((newSales || []).map(s => s.id));
 
     setMessage(`ขายสำเร็จ ${totalItems} ชิ้น รวม ฿${totalPrice.toLocaleString()}`);
     setCart([]);

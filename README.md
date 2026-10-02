@@ -27,3 +27,19 @@
 4. กด Deploy
 
 > หมายเหตุ: ถ้าเผลอวาง URL ที่มี `/rest/v1/` หรือช่องว่างติดมา `lib/supabaseClient.js` จะตัดออกให้อัตโนมัติ
+
+## แจ้งเตือน Telegram (Week 9)
+
+หลังกดขายสำเร็จ ระบบจะส่งข้อความเข้า Telegram Channel อัตโนมัติ:
+- 🛍️ **มีรายการขายใหม่** — ทุกบิล (สินค้า จำนวน ราคารวม สต๊อกคงเหลือ เวลา)
+- 🚨 **สต๊อกใกล้หมด** — แยกข้อความ เมื่อสินค้าเหลือ ≤ 5
+
+Bot Token อยู่ฝั่ง Server เท่านั้น (`app/api/notify/route.js`) ไม่หลุดไปในเบราว์เซอร์
+ถ้าส่ง Telegram ไม่สำเร็จ การขายยังสำเร็จตามปกติ
+
+เพิ่ม Environment Variables บน Vercel (ไม่ต้องมี `NEXT_PUBLIC_` นำหน้า):
+
+| Key | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Token จาก @BotFather |
+| `TELEGRAM_CHAT_ID` | `@ชื่อchannel` (Public) หรือ `-100...` (Private) |
